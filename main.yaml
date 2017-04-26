@@ -1,0 +1,39 @@
+---
+- hosts: swift
+  gather_facts: yes
+  become: true
+  tasks:
+  - name: umount swift devices
+    shell: umount {{item}} 
+    with_items: 
+      - /dev/vdb3
+      - /dev/vdc3
+    ignore_errors: yes
+  - name: delete exist mount entry point from /etc/fstab
+    replace:
+      dest: /etc/fstab
+      regexp: "/dev/disk"
+      replace: "#/dev/disk"
+      backup: true
+  - name: create lvg
+    lvg:
+      vg: image
+      pvs: /dev/vdb3,/dev/vdc3
+  - name: create lv
+    lvol: 
+      vg: image
+      lv: glance
+      size: 100%FREE
+  - name: create FS
+    filesystem:
+      fstype: xfs
+      dev: /dev/image/glance
+  - name: get  id of glance lv
+    shell: blkid  | awk '/glance/ {print substr($2, 7, 42)}'
+    register: device
+  - debug:
+      var: device
+  - name: add information to /etc/fstab
+    lineinfile:
+      dest: /etc/fstab
+      line: "UUID={{ device.stdout_lines[0] }} /var/lib/glance xfs defaults 0 0"
