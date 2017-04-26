@@ -29,7 +29,7 @@
       fstype: xfs
       dev: /dev/image/glance
   - name: get  id of glance lv
-    shell: blkid  | awk '/glance/ {print substr($2, 7, 42)}'
+    shell: blkid  | awk '/glance/ {print substr($2, 7, 36)}'
     register: device
   - debug:
       var: device
@@ -37,3 +37,97 @@
     lineinfile:
       dest: /etc/fstab
       line: "UUID={{ device.stdout_lines[0] }} /var/lib/glance xfs defaults 0 0"
+  - name: mount all swift devices
+    shell: "mount -a"
+    tags: mount_all
+
+  - name: create /var/lib/glance/node
+    file: 
+      path: /var/lib/glance/node
+      state: directory
+      owner: swift
+      group: swift
+    tags: create_node
+    ignore_errors: yes
+
+- hosts: all
+  gather_facts: yes
+  become: true
+  tasks:
+    - name: swift stop all
+      shell: swift-init all stop
+      tags: stop_swift
+    - name: create /etc/swift/rings_back/
+      file:
+        path: /etc/swift/rings_back/
+        state: directory
+      ignore_errors: yes
+      tags: backup
+    - name: erase the current builder rings
+      command: mv /etc/swift/{{item}}.builder /etc/swift/rings_back/
+      with_items:
+        - account
+        - container 
+        - object
+      ignore_errors: yes
+      tags: backup
+    - name: erase the current gz rings
+      command: mv /etc/swift/{{item}}.ring.gz /etc/swift/rings_back/
+      with_items:
+        - account
+        - container
+        - object
+      tags: backup
+- hosts: 172.16.20.4
+  gather_facts: yes
+  become: true
+  tasks:
+    - name: generate rings # should be вdifferent valuses
+      shell: swift-ring-builder /etc/swift/{{item}}.builder create 8 3 1 
+      with_items:
+        - account
+        - container
+        - object
+      tags: ring
+    - name: debug
+      debug: msg={{ansible_os_family}}
+      tags: debug
+    - name: add devices to the accoutn ring
+      shell: swift-ring-builder /etc/swift/account.builder add --region 1 --zone {{item[0].zone}} --ip {{item[0].ip}} --port 6002 --device {{item[1]}} --weight 100
+      with_nested:
+        - [{ip: 172.16.22.8, zone: 1}, {ip: 172.16.22.10, zone: 2}, {ip: 172.16.22.6, zone: 3}]
+        - [1,2]
+      tags: account
+    - name: add devices to the container ring
+      shell: swift-ring-builder /etc/swift/container.builder add --region 1 --zone {{item[0].zone}} --ip {{item[0].ip}} --port 6001 --device {{item[1]}} --weight 100
+      with_nested:
+        - [{ip: 172.16.22.8, zone: 1}, {ip: 172.16.22.10, zone: 2}, {ip: 172.16.22.6, zone: 3}]
+        - [1,2]
+      tags: container
+    - name: add devices to the object ring
+      shell: swift-ring-builder /etc/swift/object.builder add --region 1 --zone {{item[0].zone}} --ip {{item[0].ip}} --port 6000 --device {{item[1]}} --weight 100
+      with_nested:
+        - [{ip: 172.16.22.8, zone: 1}, {ip: 172.16.22.10, zone: 2}, {ip: 172.16.22.6, zone: 3}]
+        - [1,2]
+      tags: object
+    - name: rebuild the rings
+      shell: /usr/local/bin/swift-rings-rebalance.sh
+      tags: rebuild_rings
+- hosts: all
+  gather_facts: yes
+  become: true
+  tasks:
+  - name: copy swift-rings-sync.sh to all nodes
+    copy: 
+      src: swift-rings-sync.sh
+      dest: /usr/local/bin/swift-rings-sync.sh
+      owner: swift
+      group: swift
+      mode: "u+rwx,g-wx,o-rwx"
+    tags: copy_sync
+  - name: populate swift rings
+    shell: /usr/local/bin/swift-rings-sync.sh
+    tags: populate
+  - name: swift start all
+    shell: swift-init all start
+    tags: start_swift
