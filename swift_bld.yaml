@@ -1,0 +1,152 @@
+---
+- hosts: swift
+  gather_facts: yes
+  become: true
+  tasks:
+  - name: swift stop all
+    shell: swift-init all stop
+    tags: stop_swift_storage
+  - name: umount swift devices
+    shell: umount /var/lib/glance 
+    ignore_errors: yes
+    tags: umount
+  - name: delete exist mount entry point from /etc/fstab
+    shell: sed -e '/glance/s/^/#/g' -i /etc/fstab 
+    tags: delete_mountpoint
+  - name: delete lv
+    lvol: 
+      vg: image
+      lv: glance
+      state: absent
+      force: yes
+    tags: lv
+  - name: delete lv
+    lvg:
+      vg: image
+      state: absent
+      pvs: ''
+      force: yes
+    tags: lg
+  - name: list of disks
+    shell: pvdisplay | awk '/new/ {print $1}'| tr -d '"'
+    register: disks
+    tags: create_xfs
+  - debug: msg={{ disks.stdout_lines }}   
+    tags: create_xfs
+  - name: create FS
+    filesystem: 
+      fstype: xfs
+      dev: "{{item}}"
+      force: yes
+    with_items: 
+      - "{{ disks.stdout_lines }}"
+    tags: create_xfs  
+  - name: get  id of disk
+    shell: blkid  | awk '/xfs/ {print substr($2, 7, 36)}'
+    register: device
+    tags: fstab_add
+  - debug: msg='UUID={{item}} /var/lib/glance/{{item}} xfs noatime,nodiratime,nobarrier,logbufs=8    00'
+    with_items:
+      - "{{ device.stdout_lines }}"
+    tags: fstab_add
+  - name: add information to /etc/fstab
+    lineinfile:
+      dest: /etc/fstab
+      line: 'UUID={{item}} /var/lib/glance/{{item}} xfs noatime,nodiratime,nobarrier,logbufs=8    00'
+    with_items:
+      - "{{ device.stdout_lines }}"
+    tags: fstab_add
+  - name: mount all swift devices
+    shell: "mount -a"
+    tags: mount_all
+
+  - name: create /var/lib/glance/node
+    file: 
+      path: /var/lib/glance/node
+      state: directory
+      owner: swift
+      group: swift
+    tags: create_node
+    ignore_errors: yes
+
+- hosts: all
+  gather_facts: yes
+  become: true
+  tasks:
+    - name: swift stop all
+      shell: swift-init all stop
+      tags: stop_swift
+    - name: create /etc/swift/rings_back/
+      file:
+        path: /etc/swift/rings_back/
+        state: directory
+      ignore_errors: yes
+      tags: backup
+    - name: erase the current builder rings
+      command: mv /etc/swift/{{item}}.builder /etc/swift/rings_back/
+      with_items:
+        - account
+        - container 
+        - object
+      ignore_errors: yes
+      tags: backup
+    - name: erase the current gz rings
+      command: mv /etc/swift/{{item}}.ring.gz /etc/swift/rings_back/
+      with_items:
+        - account
+        - container
+        - object
+      tags: backup
+- hosts: 172.16.20.4
+  gather_facts: yes
+  become: true
+  tasks:
+    - name: generate rings # should be вdifferent valuses
+      shell: swift-ring-builder /etc/swift/{{item}}.builder create 8 3 1 
+      with_items:
+        - account
+        - container
+        - object
+      tags: ring
+    - name: debug
+      debug: msg={{ansible_os_family}}
+      tags: debug
+    - name: add devices to the accoutn ring
+      shell: swift-ring-builder /etc/swift/account.builder add --region 1 --zone {{item[0].zone}} --ip {{item[0].ip}} --port 6002 --device {{item[1]}} --weight 100
+      with_nested:
+        - [{ip: 172.16.22.8, zone: 1}, {ip: 172.16.22.10, zone: 2}, {ip: 172.16.22.6, zone: 3}]
+        - [1,2]
+      tags: account
+    - name: add devices to the container ring
+      shell: swift-ring-builder /etc/swift/container.builder add --region 1 --zone {{item[0].zone}} --ip {{item[0].ip}} --port 6001 --device {{item[1]}} --weight 100
+      with_nested:
+        - [{ip: 172.16.22.8, zone: 1}, {ip: 172.16.22.10, zone: 2}, {ip: 172.16.22.6, zone: 3}]
+        - [1,2]
+      tags: container
+    - name: add devices to the object ring
+      shell: swift-ring-builder /etc/swift/object.builder add --region 1 --zone {{item[0].zone}} --ip {{item[0].ip}} --port 6000 --device {{item[1]}} --weight 100
+      with_nested:
+        - [{ip: 172.16.22.8, zone: 1}, {ip: 172.16.22.10, zone: 2}, {ip: 172.16.22.6, zone: 3}]
+        - [1,2]
+      tags: object
+    - name: rebuild the rings
+      shell: /usr/local/bin/swift-rings-rebalance.sh
+      tags: rebuild_rings
+- hosts: all
+  gather_facts: yes
+  become: true
+  tasks:
+  - name: copy swift-rings-sync.sh to all nodes
+    copy: 
+      src: swift-rings-sync.sh
+      dest: /usr/local/bin/swift-rings-sync.sh
+      owner: swift
+      group: swift
+      mode: "u+rwx,g-wx,o-rwx"
+    tags: copy_sync
+  - name: populate swift rings
+    shell: /usr/local/bin/swift-rings-sync.sh
+    tags: populate
+  - name: swift start all
+    shell: swift-init all start
+    tags: start_swift
