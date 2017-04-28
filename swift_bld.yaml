@@ -44,7 +44,17 @@
   - name: get  id of disk
     shell: blkid  | awk '/xfs/ {print substr($2, 7, 36)}'
     register: device
-    tags: create_blkid
+    tags: list_of_disks
+  - name: get storage ip
+    shell: "ifconfig  br-storage | grep 'inet '| cut -d':' -f2 | cut -d' ' -f1"
+    register: ips
+    tags: list_of_disks
+  - name: save bld id in facts
+    set_fact: 
+      swift_blk: "{{ device.stdout_lines | list }}"
+      storage_ip: "{{ ips.stdout_lines[0] }}"
+      zone: "{{ 16 | random(1, 1) }}"
+    tags: list_of_disks
   - name: add information to /etc/fstab
     lineinfile:
       dest: /etc/fstab
@@ -106,13 +116,31 @@
         - container
         - object
       tags: ring
-    - name: debug
-      debug: msg={{ansible_os_family}}
-      tags: debug
-    - name: add devices to the accoutn ring
-      shell: swift-ring-builder /etc/swift/account.builder add --region 1 --zone {{item[0].zone}} --ip {{item[0].ip}} --port 6002 --device {{item[1]}} --weight 100
+    - name: check list of disks
+      debug: msg={{ hostvars[item]['swift_blk']}}
+      with_items:
+      - "{{ groups['swift'] }}"
+      tags: list_of_disks
+    - name: check list of storage ip
+      debug: msg={{ hostvars[item]['storage_ip'] }}
+      with_items:
+      - "{{ groups['swift'] }}"
+      tags: list_of_disks
+    - name: check zone
+      debug: msg={{ hostvars[item]['zone'] }}
+      with_items:
+      - "{{ groups['swift'] }}"
+      tags: list_of_disks
+    - name: print swift ring
+      debug:  msg="swift-ring-builder /etc/swift/account.builder add --region 1 --zone {{hostvars[item[0]]['zone']}} --ip {{hostvars[item[0]]['storage_ip']}} --port 6002 --device {{hostvars[item[0]]['swift_blk'][item[1]]}} --weight 100"
       with_nested:
-        - [{ip: 172.16.22.8, zone: 1}, {ip: 172.16.22.10, zone: 2}, {ip: 172.16.22.6, zone: 3}]
+        - "{{ groups['swift'] }}"
+        - [0,1]
+      tags: list_of_disks
+    - name: add devices to the accoutn ring
+      shell: swift-ring-builder /etc/swift/account.builder add --region 1 --zone 1 --ip {{hostvars[item[0]]['storage_ip']}} --port 6002 --device {{item[1]}} --weight 100
+      with_nested:
+        - "{{ groups['swift'] }}"
         - [1,2]
       tags: account
     - name: add devices to the container ring
