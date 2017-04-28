@@ -44,30 +44,28 @@
   - name: get  id of disk
     shell: blkid  | awk '/xfs/ {print substr($2, 7, 36)}'
     register: device
-    tags: fstab_add
-  - debug: msg='UUID={{item}} /var/lib/glance/{{item}} xfs noatime,nodiratime,nobarrier,logbufs=8    00'
-    with_items:
-      - "{{ device.stdout_lines }}"
-    tags: fstab_add
+    tags: create_blkid
   - name: add information to /etc/fstab
     lineinfile:
       dest: /etc/fstab
-      line: 'UUID={{item}} /var/lib/glance/{{item}} xfs noatime,nodiratime,nobarrier,logbufs=8    00'
+      line: 'UUID={{item}} /var/lib/glance/node/{{item}} xfs noatime,nodiratime,nobarrier,logbufs=8    00'
     with_items:
       - "{{ device.stdout_lines }}"
-    tags: fstab_add
-  - name: mount all swift devices
-    shell: "mount -a"
-    tags: mount_all
-
-  - name: create /var/lib/glance/node
-    file: 
-      path: /var/lib/glance/node
+    tags: create_blkid
+  - name: create /var/lib/glance/node/{{item}}
+    file:
+      path: /var/lib/glance/node/{{item}}
       state: directory
       owner: swift
       group: swift
-    tags: create_node
+    with_items:
+      - "{{ device.stdout_lines }}"
     ignore_errors: yes
+    tags: create_blkid
+
+  - name: mount all swift devices
+    shell: "mount -a"
+    tags: mount_all
 
 - hosts: all
   gather_facts: yes
