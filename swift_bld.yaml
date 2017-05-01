@@ -49,11 +49,23 @@
     shell: "ifconfig  br-storage | grep 'inet '| cut -d':' -f2 | cut -d' ' -f1"
     register: ips
     tags: list_of_disks
+  - name: Initialize an empty list for our disks
+    set_fact:
+      uidDisks: []
+    tags: list_of_disks
+  - name: create array 
+    set_fact: uidDisks='{{ uidDisks }} + [ {{ item  }} ]'
+    with_sequence: start=0 end={{ device.stdout_lines | length  - 1}}
+    register: len
+    tags: list_of_disks
+  - name: check list of disks
+    debug: msg={{uidDisks}}
+    tags: list_of_disks
   - name: save bld id in facts
     set_fact: 
       swift_blk: "{{ device.stdout_lines | list }}"
       storage_ip: "{{ ips.stdout_lines[0] }}"
-      zone: "{{ 16 | random(1, 1) }}"
+      zone: "{{100 | random(1,1)}}"
     tags: list_of_disks
   - name: add information to /etc/fstab
     lineinfile:
@@ -131,11 +143,20 @@
       with_items:
       - "{{ groups['swift'] }}"
       tags: list_of_disks
+    - name: check list pof disks
+      debug:  msg="{{hostvars[item]['uidDisks']}}"
+      with_items:
+        - "{{ groups['swift'] }}"
+      tags: list_of_disks
+    - name: print swift ring len
+      set_fact:
+        len: "{{hostvars['172.16.20.10']['swift_blk']}}"
+      tags: list_of_disks
     - name: print swift ring
-      debug:  msg="swift-ring-builder /etc/swift/account.builder add --region 1 --zone {{hostvars[item[0]]['zone']}} --ip {{hostvars[item[0]]['storage_ip']}} --port 6002 --device {{hostvars[item[0]]['swift_blk'][item[1]]}} --weight 100"
+      debug:  msg="swift-ring-builder /etc/swift/account.builder add --region 1 --zone {{hostvars[item[0]]['zone']}} --ip {{hostvars[item[0]]['storage_ip']}} --port 6002 --device {{hostvars[item[0]]['swift_blk']}} --weight 100"
       with_nested:
         - "{{ groups['swift'] }}"
-        - [0,1]
+        - "{{len}}"
       tags: list_of_disks
     - name: add devices to the accoutn ring
       shell: swift-ring-builder /etc/swift/account.builder add --region 1 --zone 1 --ip {{hostvars[item[0]]['storage_ip']}} --port 6002 --device {{item[1]}} --weight 100
