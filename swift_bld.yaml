@@ -5,34 +5,34 @@
   tasks:
   - name: swift stop all
     shell: swift-init all stop
-    tags: stop_swift_storage
+    tags: stop_swift_storage,step1
   - name: umount swift devices
     shell: umount /var/lib/glance 
     ignore_errors: yes
-    tags: umount
+    tags: umount,step0
   - name: delete exist mount entry point from /etc/fstab
     shell: sed -e '/glance/s/^/#/g' -i /etc/fstab 
-    tags: delete_mountpoint
+    tags: delete_mountpoint,step1
   - name: delete lv
     lvol: 
       vg: image
       lv: glance
       state: absent
       force: yes
-    tags: lv
+    tags: lv,step2
   - name: delete lv
     lvg:
       vg: image
       state: absent
       pvs: ''
       force: yes
-    tags: lg
+    tags: lg,step2
   - name: list of disks
     shell: pvdisplay | awk '/new/ {print $1}'| tr -d '"'
     register: disks
-    tags: create_xfs
+    tags: create_xfs,step3
   - debug: msg={{ disks.stdout_lines }}   
-    tags: create_xfs
+    tags: create_xfs,step3
   - name: create FS
     filesystem: 
       fstype: xfs
@@ -40,24 +40,24 @@
       force: yes
     with_items: 
       - "{{ disks.stdout_lines }}"
-    tags: create_xfs  
+    tags: create_xfs,step3  
   - name: get  id of disk
     shell: blkid  | awk '/xfs/ {print substr($2, 7, 36)}'
     register: device
-    tags: list_of_disks
+    tags: list_of_disks,step4
   - name: get storage ip
     shell: "ifconfig  br-storage | grep 'inet '| cut -d':' -f2 | cut -d' ' -f1"
     register: ips
-    tags: list_of_disks
+    tags: list_of_disks,step4
   - name: Initialize an empty list for our disks
     set_fact:
       uidDisks: []
-    tags: list_of_disks
+    tags: list_of_disks,step4
   - name: create array 
     set_fact: uidDisks='{{ uidDisks }} + [ {{ item  }} ]'
     with_sequence: start=0 end={{ device.stdout_lines | length  - 1}}
     register: len
-    tags: list_of_disks
+    tags: list_of_disks,step4
   - name: check list of disks
     debug: msg={{uidDisks}}
     tags: list_of_disks
@@ -66,14 +66,14 @@
       swift_blk: "{{ device.stdout_lines | list }}"
       storage_ip: "{{ ips.stdout_lines[0] }}"
       zone: "{{100 | random(1,1)}}"
-    tags: list_of_disks
+    tags: list_of_disks,step4
   - name: add information to /etc/fstab
     lineinfile:
       dest: /etc/fstab
       line: 'UUID={{item}} /var/lib/glance/node/{{item}} xfs noatime,nodiratime,nobarrier,logbufs=8    00'
     with_items:
       - "{{ device.stdout_lines }}"
-    tags: create_blkid
+    tags: create_blkid,step4
   - name: create /var/lib/glance/node/{{item}}
     file:
       path: /var/lib/glance/node/{{item}}
@@ -83,11 +83,11 @@
     with_items:
       - "{{ device.stdout_lines }}"
     ignore_errors: yes
-    tags: create_blkid
+    tags: create_blkid,step4
 
   - name: mount all swift devices
     shell: "mount -a"
-    tags: mount_all
+    tags: mount_all,step4
 
 - hosts: all
   gather_facts: yes
@@ -95,7 +95,7 @@
   tasks:
     - name: swift stop all
       shell: swift-init all stop
-      tags: stop_swift
+      tags: stop_swift,backup
     - name: create /etc/swift/rings_back/
       file:
         path: /etc/swift/rings_back/
@@ -117,17 +117,17 @@
         - container
         - object
       tags: backup
-- hosts: 172.16.20.4
+- hosts: primary
   gather_facts: yes
   become: true
   tasks:
     - name: generate rings # should be вdifferent valuses
-      shell: swift-ring-builder /etc/swift/{{item}}.builder create 8 3 1 
+      shell: swift-ring-builder /etc/swift/{{item}}.builder create 15 3 1 
       with_items:
         - account
         - container
         - object
-      tags: ring
+      tags: rings,step5
     - name: check list of disks
       debug: msg={{ hostvars[item]['swift_blk']}}
       with_items:
@@ -150,8 +150,8 @@
       tags: list_of_disks
     - name: print swift ring len
       set_fact:
-        len: "{{hostvars['172.16.20.10']['swift_blk']}}"
-      tags: list_of_disks
+        len: "{{hostvars['135.69.26.78']['swift_blk']}}"
+      tags: list_of_disks,step5
     - name: print swift ring
       debug:  msg="swift-ring-builder /etc/swift/account.builder add --region 1 --zone {{hostvars[item[0]]['zone']}} --ip {{hostvars[item[0]]['storage_ip']}} --port 6002 --device {{hostvars[item[0]]['swift_blk']}} --weight 100"
       with_nested:
@@ -159,26 +159,26 @@
         - "{{len}}"
       tags: list_of_disks
     - name: add devices to the accoutn ring
-      shell: swift-ring-builder /etc/swift/account.builder add --region 1 --zone 1 --ip {{hostvars[item[0]]['storage_ip']}} --port 6002 --device {{item[1]}} --weight 100
+      shell: swift-ring-builder /etc/swift/account.builder add --region 1 --zone {{hostvars[item[0]]['zone']}} --ip {{hostvars[item[0]]['storage_ip']}} --port 6002 --device {{hostvars[item[0]]['swift_blk'][item[1]]}} --weight 100
       with_nested:
         - "{{ groups['swift'] }}"
-        - [1,2]
-      tags: account
+        - "{{len}}"
+      tags: account,step5
     - name: add devices to the container ring
-      shell: swift-ring-builder /etc/swift/container.builder add --region 1 --zone {{item[0].zone}} --ip {{item[0].ip}} --port 6001 --device {{item[1]}} --weight 100
+      shell: swift-ring-builder /etc/swift/container.builder add --region 1 --zone {{hostvars[item[0]]['zone']}} --ip {{hostvars[item[0]]['storage_ip']}} --port 6001 --device {{hostvars[item[0]]['swift_blk'][item[1]]}} --weight 100
       with_nested:
-        - [{ip: 172.16.22.8, zone: 1}, {ip: 172.16.22.10, zone: 2}, {ip: 172.16.22.6, zone: 3}]
-        - [1,2]
-      tags: container
+        - "{{ groups['swift'] }}"
+        - "{{len}}"
+      tags: container,step5
     - name: add devices to the object ring
-      shell: swift-ring-builder /etc/swift/object.builder add --region 1 --zone {{item[0].zone}} --ip {{item[0].ip}} --port 6000 --device {{item[1]}} --weight 100
+      shell: swift-ring-builder /etc/swift/object.builder add --region 1 --zone {{hostvars[item[0]]['zone']}} --ip {{hostvars[item[0]]['storage_ip']}} --port 6000 --device {{hostvars[item[0]]['swift_blk'][item[1]]}} --weight 100
       with_nested:
-        - [{ip: 172.16.22.8, zone: 1}, {ip: 172.16.22.10, zone: 2}, {ip: 172.16.22.6, zone: 3}]
-        - [1,2]
-      tags: object
+        - "{{ groups['swift'] }}"
+        - "{{len}}"
+      tags: object,step5
     - name: rebuild the rings
       shell: /usr/local/bin/swift-rings-rebalance.sh
-      tags: rebuild_rings
+      tags: rebuild_rings,step6
 - hosts: all
   gather_facts: yes
   become: true
@@ -190,10 +190,10 @@
       owner: swift
       group: swift
       mode: "u+rwx,g-wx,o-rwx"
-    tags: copy_sync
+    tags: copy_sync,step7
   - name: populate swift rings
     shell: /usr/local/bin/swift-rings-sync.sh
-    tags: populate
+    tags: populate,step7
   - name: swift start all
     shell: swift-init all start
-    tags: start_swift
+    tags: start_swift,step7
