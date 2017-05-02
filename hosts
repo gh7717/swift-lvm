@@ -11,3 +11,9 @@
 135.69.26.75
 [swift:vars]
 become=true
+[controller:vars]
+become=true
+[primary]
+135.69.24.240
+[primary:vars]
+become=true
